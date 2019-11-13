@@ -7,15 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/FactomProject/basen"
-	"github.com/FactomProject/btcutilecc"
 	"golang.org/x/crypto/ripemd160"
 	"io"
 	"math/big"
+	"github.com/Moonlight-io/asteroid-core/models/primatives"
 )
 
 var (
-	curve                 = btcutil.Secp256k1()
-	curveParams           = curve.Params()
 	BitcoinBase58Encoding = basen.NewEncoding("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
 )
 
@@ -61,24 +59,26 @@ func base58Encode(data []byte) []byte {
 }
 
 // Keys
-func publicKeyForPrivateKey(key []byte) []byte {
-	return compressPublicKey(curve.ScalarBaseMult([]byte(key)))
+func publicKeyForPrivateKey(curve primatives.EllipticCurve, key []byte) []byte {
+	var keyBigInt big.Int
+	keyBigInt.SetBytes(key)
+	return compressPublicKey(curve.ScalarBaseMult(&keyBigInt))
 }
 
-func addPublicKeys(key1 []byte, key2 []byte) []byte {
-	x1, y1 := expandPublicKey(key1)
-	x2, y2 := expandPublicKey(key2)
-	return compressPublicKey(curve.Add(x1, y1, x2, y2))
+func addPublicKeys(curve primatives.EllipticCurve, key1 []byte, key2 []byte) []byte {
+	p1 := expandPublicKey(curve, key1)
+	p2 := expandPublicKey(curve, key2)
+	return compressPublicKey(curve.Add(p1, p2))
 }
 
-func addPrivateKeys(key1 []byte, key2 []byte) []byte {
+func addPrivateKeys(curve primatives.EllipticCurve, key1 []byte, key2 []byte) []byte {
 	var key1Int big.Int
 	var key2Int big.Int
 	key1Int.SetBytes(key1)
 	key2Int.SetBytes(key2)
 
 	key1Int.Add(&key1Int, &key2Int)
-	key1Int.Mod(&key1Int, curve.Params().N)
+	key1Int.Mod(&key1Int, curve.N)
 
 	b := key1Int.Bytes()
 	if len(b) < 32 {
@@ -88,14 +88,14 @@ func addPrivateKeys(key1 []byte, key2 []byte) []byte {
 	return b
 }
 
-func compressPublicKey(x *big.Int, y *big.Int) []byte {
+func compressPublicKey(p primatives.Point) []byte {
 	var key bytes.Buffer
 
 	// Write header; 0x2 for even y value; 0x3 for odd
-	key.WriteByte(byte(0x2) + byte(y.Bit(0)))
+	key.WriteByte(byte(0x2) + byte(p.Y.Bit(0)))
 
 	// Write X coord; Pad the key so x is aligned with the LSB. Pad size is key length - header size (1) - xBytes size
-	xBytes := x.Bytes()
+	xBytes := p.X.Bytes()
 	for i := 0; i < (PublicKeyCompressedLength - 1 - len(xBytes)); i++ {
 		key.WriteByte(0x0)
 	}
@@ -105,34 +105,33 @@ func compressPublicKey(x *big.Int, y *big.Int) []byte {
 }
 
 // As described at https://bitcointa.lk/threads/compressed-keys-y-from-x.95735/
-func expandPublicKey(key []byte) (*big.Int, *big.Int) {
-	Y := big.NewInt(0)
-	X := big.NewInt(0)
+func expandPublicKey(curve primatives.EllipticCurve, key []byte) (primatives.Point) {
+	var point primatives.Point
 	qPlus1Div4 := big.NewInt(0)
-	X.SetBytes(key[1:])
+	point.X.SetBytes(key[1:])
 
 	// y^2 = x^3 + ax^2 + b
 	// a = 0
 	// => y^2 = x^3 + b
-	ySquared := X.Exp(X, big.NewInt(3), nil)
-	ySquared.Add(ySquared, curveParams.B)
+	ySquared := point.X.Exp(point.X, big.NewInt(3), nil)
+	ySquared.Add(ySquared, curve.B)
 
-	qPlus1Div4.Add(curveParams.P, big.NewInt(1))
+	qPlus1Div4.Add(curve.P, big.NewInt(1))
 	qPlus1Div4.Div(qPlus1Div4, big.NewInt(4))
 
 	// sqrt(n) = n^((q+1)/4) if q = 3 mod 4
-	Y.Exp(ySquared, qPlus1Div4, curveParams.P)
+	point.Y.Exp(ySquared, qPlus1Div4, curve.P)
 
 	if uint32(key[0])%2 == 0 {
-		Y.Sub(curveParams.P, Y)
+		point.Y.Sub(curve.P, point.Y)
 	}
 
-	return X, Y
+	return point
 }
 
-func validatePrivateKey(key []byte) error {
+func validatePrivateKey(curve primatives.EllipticCurve, key []byte) error {
 	if fmt.Sprintf("%x", key) == "0000000000000000000000000000000000000000000000000000000000000000" || //if the key is zero
-		bytes.Compare(key, curveParams.N.Bytes()) >= 0 || //or is outside of the curve
+		bytes.Compare(key, curve.N.Bytes()) >= 0 || //or is outside of the curve
 		len(key) != 32 { //or is too short
 		return errors.New("Invalid seed")
 	}
@@ -140,10 +139,10 @@ func validatePrivateKey(key []byte) error {
 	return nil
 }
 
-func validateChildPublicKey(key []byte) error {
-	x, y := expandPublicKey(key)
+func validateChildPublicKey(curve primatives.EllipticCurve, key []byte) error {
+	point := expandPublicKey(curve, key)
 
-	if x.Sign() == 0 || y.Sign() == 0 {
+	if point.X.Sign() == 0 || point.Y.Sign() == 0 {
 		return errors.New("Invalid public key")
 	}
 

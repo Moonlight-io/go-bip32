@@ -7,6 +7,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"errors"
+	"github.com/Moonlight-io/asteroid-core/models/primatives"
 )
 
 const (
@@ -31,9 +32,9 @@ type Key struct {
 }
 
 // Creates a new master extended key from a seed
-func NewMasterKey(seed []byte) (*Key, error) {
+func NewMasterKey(curve primatives.EllipticCurve, masterSeed []byte, seed []byte) (*Key, error) {
 	// Generate key and chaincode
-	hmac := hmac.New(sha512.New, []byte("Bitcoin seed"))
+	hmac := hmac.New(sha512.New, masterSeed)
 	hmac.Write([]byte(seed))
 	intermediary := hmac.Sum(nil)
 
@@ -42,7 +43,7 @@ func NewMasterKey(seed []byte) (*Key, error) {
 	chainCode := intermediary[32:]
 
 	// Validate key
-	err := validatePrivateKey(keyBytes)
+	err := validatePrivateKey(curve, keyBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func NewMasterKey(seed []byte) (*Key, error) {
 }
 
 // Derives a child key from a given parent as outlined by bip32
-func (key *Key) NewChildKey(childIdx uint32) (*Key, error) {
+func (key *Key) NewChildKey(curve primatives.EllipticCurve, childIdx uint32) (*Key, error) {
 	hardenedChild := childIdx >= FirstHardenedChild
 	childIndexBytes := uint32Bytes(childIdx)
 
@@ -78,7 +79,7 @@ func (key *Key) NewChildKey(childIdx uint32) (*Key, error) {
 	if hardenedChild {
 		data = append([]byte{0x0}, key.Key...)
 	} else {
-		data = publicKeyForPrivateKey(key.Key)
+		data = publicKeyForPrivateKey(curve, key.Key)        //here
 	}
 	data = append(data, childIndexBytes...)
 
@@ -97,38 +98,38 @@ func (key *Key) NewChildKey(childIdx uint32) (*Key, error) {
 	// Bip32 CKDpriv
 	if key.IsPrivate {
 		childKey.Version = PrivateWalletVersion
-		childKey.FingerPrint = hash160(publicKeyForPrivateKey(key.Key))[:4]
-		childKey.Key = addPrivateKeys(intermediary[:32], key.Key)
+		childKey.FingerPrint = hash160(publicKeyForPrivateKey(curve, key.Key))[:4]
+		childKey.Key = addPrivateKeys(curve, intermediary[:32], key.Key)
 
 		// Validate key
-		err := validatePrivateKey(childKey.Key)
+		err := validatePrivateKey(curve, childKey.Key)
 		if err != nil {
 			return nil, err
 		}
 		// Bip32 CKDpub
 	} else {
-		keyBytes := publicKeyForPrivateKey(intermediary[:32])
+		keyBytes := publicKeyForPrivateKey(curve, intermediary[:32])
 
 		// Validate key
-		err := validateChildPublicKey(keyBytes)
+		err := validateChildPublicKey(curve, keyBytes)
 		if err != nil {
 			return nil, err
 		}
 
 		childKey.Version = PublicWalletVersion
 		childKey.FingerPrint = hash160(key.Key)[:4]
-		childKey.Key = addPublicKeys(keyBytes, key.Key)
+		childKey.Key = addPublicKeys(curve, keyBytes, key.Key)
 	}
 
 	return childKey, nil
 }
 
 // Create public version of key or return a copy; 'Neuter' function from the bip32 spec
-func (key *Key) PublicKey() *Key {
+func (key *Key) PublicKey(curve primatives.EllipticCurve) *Key {
 	keyBytes := key.Key
 
 	if key.IsPrivate {
-		keyBytes = publicKeyForPrivateKey(keyBytes)
+		keyBytes = publicKeyForPrivateKey(curve, keyBytes)
 	}
 
 	return &Key{
